@@ -57,6 +57,36 @@ app.post("/books", async (req, res) => {
   }
 });
 
+
+app.post("/my-borrows", async (req, res) => {
+  try {
+    const borrowData = req.body;
+    if (!borrowData.bookId || !borrowData.borrowerEmail) {
+      return res.status(400).json({ message: "Book ID and borrower email are required." });
+    }
+
+    const existingBorrow = await myCollection.findOne({
+      bookId: borrowData.bookId,
+      borrowerEmail: borrowData.borrowerEmail,
+    });
+    if (existingBorrow) {
+      return res.status(409).json({ message: "This book is already in your borrows." });
+    }
+
+    const result = await myCollection.insertOne({
+      ...borrowData,
+      borrowedAt: new Date(),
+    });
+
+    res.status(201).json({
+      message: "Book added to My Borrows successfully.",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to add book to My Borrows." });
+  }
+});
+
 app.get('/', (req, res) => {
     res.send('Hello World!');
 });
