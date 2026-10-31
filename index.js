@@ -44,47 +44,21 @@ app.get('/books/:id', async (req, res) => {
 })
 
 app.post("/books", async (req, res) => {
-  try {
+
     const bookData = req.body;
     const result = await BookNookCollection.insertOne(bookData);
 
-    res.status(201).json({
-      message: "Book added successfully",
-      insertedId: result.insertedId,
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Failed to add book" });
-  }
+    res.send(result)
+
 });
 
 
-app.post("/my-borrows", async (req, res) => {
-  try {
-    const borrowData = req.body;
-    if (!borrowData.bookId || !borrowData.borrowerEmail) {
-      return res.status(400).json({ message: "Book ID and borrower email are required." });
-    }
+app.post("/books", async (req, res) => {
 
-    const existingBorrow = await myCollection.findOne({
-      bookId: borrowData.bookId,
-      borrowerEmail: borrowData.borrowerEmail,
-    });
-    if (existingBorrow) {
-      return res.status(409).json({ message: "This book is already in your borrows." });
-    }
+    const bookData = req.body;
+    const result = await myCollection.insertOne(bookData);
 
-    const result = await myCollection.insertOne({
-      ...borrowData,
-      borrowedAt: new Date(),
-    });
-
-    res.status(201).json({
-      message: "Book added to My Borrows successfully.",
-      insertedId: result.insertedId,
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Failed to add book to My Borrows." });
-  }
+    res.send(result)
 });
 
 app.get('/', (req, res) => {
