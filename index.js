@@ -43,6 +43,19 @@ app.get('/books/:id', async (req, res) => {
     res.send(result)
 })
 
+app.post("/books", async (req, res) => {
+  try {
+    const bookData = req.body;
+    const result = await BookNookCollection.insertOne(bookData);
+
+    res.status(201).json({
+      message: "Book added successfully",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to add book" });
+  }
+});
 
 app.get('/', (req, res) => {
     res.send('Hello World!');
