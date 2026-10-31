@@ -43,7 +43,7 @@ app.get('/books/:id', async (req, res) => {
     res.send(result)
 })
 
-app.post("/books", async (req, res) => {
+app.post("/my-borrows", async (req, res) => {
 
     const bookData = req.body;
     const result = await BookNookCollection.insertOne(bookData);
