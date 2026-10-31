@@ -61,6 +61,15 @@ app.post("/books", async (req, res) => {
     res.send(result)
 });
 
+app.get("/my/:email", async (req, res) => {
+    const { email } = req.params;
+    const result = await myCollection
+        .find({ borrowerEmail: email })
+        .toArray();
+
+    res.send(result);
+});
+
 app.get('/', (req, res) => {
     res.send('Hello World!');
 });
