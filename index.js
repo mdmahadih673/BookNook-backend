@@ -56,12 +56,22 @@ app.post("/my-borrows", async (req, res) => {
         return res.status(409).send({ message: 'You already have a borrowed book.' });
     }
 
+    const book = await BookNookCollection.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+        return res.status(404).send({ message: 'Book not found.' });
+    }
+
+    const availableCopies = Number(book.availableCopies);
+    if (!Number.isFinite(availableCopies) || availableCopies < 1) {
+        return res.status(409).send({ message: 'No copies of this book are available.' });
+    }
+
     const stockUpdate = await BookNookCollection.updateOne(
-        { _id: new ObjectId(bookId), availableCopies: { $gt: 0 } },
-        { $inc: { availableCopies: -1 } },
+        { _id: book._id, availableCopies: book.availableCopies },
+        { $set: { availableCopies: availableCopies - 1 } },
     );
     if (stockUpdate.modifiedCount !== 1) {
-        return res.status(409).send({ message: 'No copies of this book are available.' });
+        return res.status(409).send({ message: 'Book quantity changed. Please try again.' });
     }
 
     const bookData = { ...req.body, bookId };
@@ -95,17 +105,31 @@ app.delete("/my-borrows/:id", async (req, res) => {
         return res.status(400).send({ message: 'Invalid book ID.' });
     }
 
-    const deleted = await myCollection.deleteOne({ _id: borrowId });
-    if (!deleted.deletedCount) {
-        return res.status(404).send({ message: 'Borrowed book not found.' });
+    const book = await BookNookCollection.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+        return res.status(404).send({ message: 'Book not found.' });
+    }
+
+    const availableCopies = Number(book.availableCopies);
+    if (!Number.isFinite(availableCopies)) {
+        return res.status(500).send({ message: 'Book quantity is invalid.' });
     }
 
     const stockUpdate = await BookNookCollection.updateOne(
-        { _id: new ObjectId(bookId) },
-        { $inc: { availableCopies: 1 } },
+        { _id: book._id, availableCopies: book.availableCopies },
+        { $set: { availableCopies: availableCopies + 1 } },
     );
-    if (!stockUpdate.matchedCount) {
-        return res.status(404).send({ message: 'Book not found.' });
+    if (stockUpdate.modifiedCount !== 1) {
+        return res.status(409).send({ message: 'Book quantity changed. Please try again.' });
+    }
+
+    const deleted = await myCollection.deleteOne({ _id: borrowId });
+    if (!deleted.deletedCount) {
+        await BookNookCollection.updateOne(
+            { _id: book._id },
+            { $inc: { availableCopies: -1 } },
+        );
+        return res.status(404).send({ message: 'Borrowed book not found.' });
     }
 
     return res.send({ message: 'Book returned successfully.' });
