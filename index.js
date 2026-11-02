@@ -14,6 +14,8 @@ app.use(express.json({ limit: '4mb' }));
 
 
 const client = new MongoClient(process.env.MONGODB_URL);
+const authBaseURL = process.env.BETTER_AUTH_URL ;
+const JWKS = createRemoteJWKSet(new URL('/api/auth/jwks', authBaseURL));
 
 export async function connectToMongoDB() {
     try {
@@ -30,7 +32,6 @@ const mongodbClirnt = await connectToMongoDB()
 const db = mongodbClirnt.db('BookNook')
 const BookNookCollection = db.collection('Books')
 const myCollection = db.collection('myBooks')
-const userCollection = db.collection('user')
 
 
 await BookNookCollection.updateMany(
@@ -45,39 +46,54 @@ await BookNookCollection.updateMany(
 
 
 const verifyToken = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    console.log(authHeader);
-    if (!authHeader) {
-        return res.status(401).send({ message: "Unauthorized access" });
-    }
-
-    const token = authHeader.split(' ')[1];
-    if (!token) {
-        return res.status(401).send({ message: "Unauthorized access" });
-    }
-    // console.log(token);
-
-    const JEKS =  createRemoteJWKSet(new URL('http://localhost:3000/api/auth/jwks'));
+    const token = req.headers.authorization?.startsWith('Bearer ')
+        ? req.headers.authorization.split(' ')[1]
+        : null;
+    if (!token) return res.status(401).send({ message: "Unauthorized access" });
 
     try {
-        
-        const {payload} = await jwtVerify(token, JEKS)
+        const { payload } = await jwtVerify(token, JWKS, {
+            issuer: authBaseURL,
+            audience: authBaseURL,
+        });
+        if (!payload.email || (!payload.id && !payload.sub)) {
+            return res.status(401).send({ message: "Token is missing user identity." });
+        }
+        req.user = {
+            id: String(payload.id || payload.sub),
+            email: String(payload.email),
+            name: String(payload.name || ''),
+            image: String(payload.image || ''),
+        };
+        next();
     } catch (error) {
-        return res.status(500).send({ message: "server error" });
+        return res.status(401).send({ message: "Invalid or expired token." });
     }
-
-    console.log(payload);
-    
-    
-    next();
-    
 }
 
-// GET http://localhost:5000/books → shob book list pbe
-app.get('/books', async (req, res) => {
-    const books = BookNookCollection.find({})
-    const allBooks = await books.toArray()
-    res.send(allBooks)
+const ownerFilter = (user) => ({
+    $or: [
+        { ownerId: user.id },
+        { ownerId: { $exists: false }, userEmail: user.email },
+    ],
+});
+
+const verifyMyBooks = (req, res, next) =>
+    req.query.mine === "true" ? verifyToken(req, res, next) : next();
+
+app.get('/books', verifyMyBooks, async (req, res) => {
+    const filter = req.query.mine === "true" ? ownerFilter(req.user) : {};
+    const booksQuery = BookNookCollection.find(filter);
+
+    if (req.query.mine === "true" || req.query.limit) {
+        booksQuery.sort({ addedDate: -1 });
+    }
+    if (req.query.limit) {
+        booksQuery.limit(Math.min(Number(req.query.limit) || 6, 6));
+    }
+
+    const books = await booksQuery.toArray();
+    res.send(books)
 })
 
 
@@ -93,29 +109,49 @@ app.get('/books/:id', verifyToken, async (req, res) => {
 const LOAN_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// POST http://localhost:5000/my-borrows → borrow record banay, book er copy 1 komay
-app.post("/my-borrows", async (req, res) => {
+// POST /borrows → borrow a book
+app.post("/borrows", verifyToken, async (req, res) => {
     const { _id, ...borrow } = req.body;
 
-    const book = await BookNookCollection.findOne({ _id: new ObjectId(_id) })
-    if (!book || book.availableCopies < 1) {
+    const alreadyBorrowed = await myCollection.findOne({
+        bookId: borrow.bookId || String(_id),
+        borrowerEmail: req.user.email,
+    });
+    if (alreadyBorrowed) {
+        return res.status(409).send({ message: "You have already borrowed this book." });
+    }
+
+    const stock = await BookNookCollection.updateOne(
+        { _id: new ObjectId(_id), availableCopies: { $gt: 0 }, totalCopies: { $gt: 0 } },
+        { $inc: { availableCopies: -1 } }
+    );
+    if (stock.matchedCount === 0) {
         return res.status(409).send({ message: "No copies are available for this book." })
     }
 
-    await BookNookCollection.updateOne({ _id: book._id }, { $inc: { availableCopies: -1 } })
-
-    const result = await myCollection.insertOne({ ...borrow, borrowedAt: new Date(), dueAt: new Date(Date.now() + LOAN_DAYS * DAY_MS) })
+    const result = await myCollection.insertOne({
+        ...borrow,
+        bookId: borrow.bookId || String(_id),
+        borrowerName: req.user.name,
+        borrowerEmail: req.user.email,
+        borrowerImage: req.user.image,
+        borrowedAt: new Date(),
+        dueAt: new Date(Date.now() + LOAN_DAYS * DAY_MS),
+    })
     res.send(result)
 })
 
 
 
-// DELETE http://localhost:5000/my/:id → borrow record muchay, book er copy firiye dey
-app.delete("/my/:id", async (req, res) => {
+// DELETE /borrows/:id → return a borrowed book
+app.delete("/borrows/:id", verifyToken, async (req, res) => {
     const { id } = req.params;
-    const record = await myCollection.findOne({ _id: new ObjectId(id) })
+    const record = await myCollection.findOne({ _id: new ObjectId(id), borrowerEmail: req.user.email })
+    if (!record) {
+        return res.status(404).send({ message: "Borrow record not found." });
+    }
 
-    if (record?.bookId) {
+    if (record.bookId) {
         await BookNookCollection.updateOne(
             { _id: new ObjectId(record.bookId) },
             { $inc: { availableCopies: 1 } }
@@ -128,10 +164,13 @@ app.delete("/my/:id", async (req, res) => {
 
 
 
-// POST http://localhost:5000/books → notun book add kore
-app.post("/books", async (req, res) => {
+// POST /books → add a book
+app.post("/books", verifyToken, async (req, res) => {
     const bookData = {
         ...req.body,
+        ownerId: req.user.id,
+        userName: req.user.name,
+        userEmail: req.user.email,
         totalCopies: Number(req.body?.totalCopies) || 0,
         availableCopies: Number(req.body?.availableCopies) || 0,
     };
@@ -142,34 +181,49 @@ app.post("/books", async (req, res) => {
 
 
 
-// GET http://localhost:5000/my/:email → oi email er user er shob borrow record pbe
-app.get("/my/:email", async (req, res) => {
-    const { email } = req.params;
+// GET /borrows → get the signed-in user's borrowed books
+app.get("/borrows", verifyToken, async (req, res) => {
     const result = await myCollection
-        .find({ borrowerEmail: email })
+        .find({ borrowerEmail: req.user.email })
         .toArray();
 
     res.send(result);
 });
 
-// PATCH http://localhost:5000/users/:email → user er name ar profile photo update kore
-app.patch("/users/:email", async (req, res) => {
-    const { email } = req.params;
-    const { name, image } = req.body;
-    const result = await userCollection.updateOne(
-        { email },
-        { $set: { name, image } }
+app.patch('/books/:id', verifyToken, async (req, res) => {
+    const { id } = req.params
+    const updates = { ...req.body }
+
+    delete updates._id
+    delete updates.ownerId
+    delete updates.userEmail
+    delete updates.userName
+
+    const result = await BookNookCollection.updateOne(
+        { _id: new ObjectId(id), ...ownerFilter(req.user) },
+        { $set: updates }
     )
-    const user = await userCollection.findOne({ email })
-    res.send(user)
+
+    if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Book not found." });
+    }
+    res.send(result)
 })
 
-// GET http://localhost:5000/ → server chalche kina just check kore
-app.get('/', (req, res) => {
-    res.send('Hello World!');
-});
 
+app.delete('/books/:id', verifyToken, async (req, res) => {
+    const { id } = req.params
 
+    const result = await BookNookCollection.deleteOne({
+        _id: new ObjectId(id),
+        ...ownerFilter(req.user),
+    })
+
+    if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Book not found." });
+    }
+    res.send(result)
+})
 
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
