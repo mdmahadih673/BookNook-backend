@@ -14,8 +14,7 @@ app.use(express.json({ limit: '4mb' }));
 
 
 const client = new MongoClient(process.env.MONGODB_URL);
-const authBaseURL = process.env.BETTER_AUTH_URL ;
-const JWKS = createRemoteJWKSet(new URL('/api/auth/jwks', authBaseURL));
+const JWKS = createRemoteJWKSet(new URL(`${process.env.BETTER_AUTH_URL}/api/auth/jwks`));
 
 export async function connectToMongoDB() {
     try {
@@ -53,8 +52,8 @@ const verifyToken = async (req, res, next) => {
 
     try {
         const { payload } = await jwtVerify(token, JWKS, {
-            issuer: authBaseURL,
-            audience: authBaseURL,
+            issuer: process.env.BETTER_AUTH_URL,
+            audience: process.env.BETTER_AUTH_URL,
         });
         if (!payload.email || (!payload.id && !payload.sub)) {
             return res.status(401).send({ message: "Token is missing user identity." });
