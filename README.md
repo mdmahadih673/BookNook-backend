@@ -31,6 +31,8 @@ Use `https://book-nook-backend-two.vercel.app` as the base URL. 🔒 means the r
 | POST | `/borrows` | 🔒 | Borrow a book |
 | DELETE | `/borrows/:id` | 🔒 | Return a borrowed book |
 
+New borrow records are stored in MongoDB's `borrows` collection with `bookId`, `bookTitle`, `bookImage`, `userEmail`, `borrowDate`, and `returnDate`. Existing records in the earlier `myBooks` collection remain visible and can still be returned.
+
 Replace `:id` with the book ID or borrow record ID. The latest-arrivals endpoint is `/books?limit=6`; there is no separate `/new-arrivals` route.
 
 ## Authentication

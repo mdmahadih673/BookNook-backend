@@ -30,7 +30,9 @@ const mongodbClirnt = await connectToMongoDB()
 
 const db = mongodbClirnt.db('BookNook')
 const BookNookCollection = db.collection('Books')
-const myCollection = db.collection('myBooks')
+const BorrowsCollection = db.collection('borrows')
+const LegacyBorrowsCollection = db.collection('myBooks')
+await BorrowsCollection.createIndex({ bookId: 1, userEmail: 1 }, { unique: true })
 
 
 await BookNookCollection.updateMany(
@@ -111,12 +113,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // POST /borrows → borrow a book
 app.post("/borrows", verifyToken, async (req, res) => {
     const { _id, ...borrow } = req.body;
+    const bookId = borrow.bookId || String(_id);
 
-    const alreadyBorrowed = await myCollection.findOne({
-        bookId: borrow.bookId || String(_id),
-        borrowerEmail: req.user.email,
-    });
-    if (alreadyBorrowed) {
+    const [alreadyBorrowed, legacyBorrow] = await Promise.all([
+        BorrowsCollection.findOne({ bookId, userEmail: req.user.email }),
+        LegacyBorrowsCollection.findOne({ bookId, borrowerEmail: req.user.email }),
+    ]);
+    if (alreadyBorrowed || legacyBorrow) {
         return res.status(409).send({ message: "You have already borrowed this book." });
     }
 
@@ -128,15 +131,26 @@ app.post("/borrows", verifyToken, async (req, res) => {
         return res.status(409).send({ message: "No copies are available for this book." })
     }
 
-    const result = await myCollection.insertOne({
-        ...borrow,
-        bookId: borrow.bookId || String(_id),
-        borrowerName: req.user.name,
-        borrowerEmail: req.user.email,
-        borrowerImage: req.user.image,
-        borrowedAt: new Date(),
-        dueAt: new Date(Date.now() + LOAN_DAYS * DAY_MS),
-    })
+    let result;
+    try {
+        result = await BorrowsCollection.insertOne({
+            bookId,
+            bookTitle: borrow.bookTitle || borrow.title,
+            bookImage: borrow.bookImage || borrow.image,
+            userEmail: req.user.email,
+            borrowDate: new Date(),
+            returnDate: new Date(Date.now() + LOAN_DAYS * DAY_MS),
+        })
+    } catch (error) {
+        await BookNookCollection.updateOne(
+            { _id: new ObjectId(_id) },
+            { $inc: { availableCopies: 1 } }
+        );
+        if (error?.code === 11000) {
+            return res.status(409).send({ message: "You have already borrowed this book." });
+        }
+        throw error;
+    }
     res.send(result)
 })
 
@@ -145,7 +159,12 @@ app.post("/borrows", verifyToken, async (req, res) => {
 // DELETE /borrows/:id → return a borrowed book
 app.delete("/borrows/:id", verifyToken, async (req, res) => {
     const { id } = req.params;
-    const record = await myCollection.findOne({ _id: new ObjectId(id), borrowerEmail: req.user.email })
+    let collection = BorrowsCollection;
+    let record = await BorrowsCollection.findOne({ _id: new ObjectId(id), userEmail: req.user.email });
+    if (!record) {
+        collection = LegacyBorrowsCollection;
+        record = await LegacyBorrowsCollection.findOne({ _id: new ObjectId(id), borrowerEmail: req.user.email });
+    }
     if (!record) {
         return res.status(404).send({ message: "Borrow record not found." });
     }
@@ -157,7 +176,7 @@ app.delete("/borrows/:id", verifyToken, async (req, res) => {
         )
     }
 
-    await myCollection.deleteOne({ _id: new ObjectId(id) });
+    await collection.deleteOne({ _id: new ObjectId(id) });
     res.send({ success: true });
 })
 
@@ -170,6 +189,7 @@ app.post("/books", verifyToken, async (req, res) => {
         ownerId: req.user.id,
         userName: req.user.name,
         userEmail: req.user.email,
+        addedDate: new Date(),
         totalCopies: Number(req.body?.totalCopies) || 0,
         availableCopies: Number(req.body?.availableCopies) || 0,
     };
@@ -182,9 +202,18 @@ app.post("/books", verifyToken, async (req, res) => {
 
 // GET /borrows → get the signed-in user's borrowed books
 app.get("/borrows", verifyToken, async (req, res) => {
-    const result = await myCollection
-        .find({ borrowerEmail: req.user.email })
-        .toArray();
+    const [borrows, legacyBorrows] = await Promise.all([
+        BorrowsCollection.find({ userEmail: req.user.email }).toArray(),
+        LegacyBorrowsCollection.find({ borrowerEmail: req.user.email }).toArray(),
+    ]);
+    const result = [...borrows, ...legacyBorrows].map((borrow) => ({
+        ...borrow,
+        bookTitle: borrow.bookTitle || borrow.title,
+        bookImage: borrow.bookImage || borrow.image,
+        userEmail: borrow.userEmail || borrow.borrowerEmail,
+        borrowDate: borrow.borrowDate || borrow.borrowedAt,
+        returnDate: borrow.returnDate || borrow.dueAt,
+    }));
 
     res.send(result);
 });
